@@ -1,0 +1,359 @@
+from flask import Flask, render_template_string, request, redirect, url_for, flash
+from flask_sqlalchemy import SQLAlchemy
+import datetime
+
+app = Flask(__name__)
+app.secret_key = "your_secret_key_here"  # 请替换为你自己的密钥
+
+# 使用 SQLite 数据库（submissions.db 会在当前目录下生成）
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///submissions.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+# 数据库模型：Submission（用车记录）
+class Submission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    start_date = db.Column(db.String(50))  # 格式如 "2025-03-10 08:00 (周一)"
+    end_date = db.Column(db.String(50))    # 格式如 "2025-03-10 12:00 (周一)"
+    driver = db.Column(db.String(50))
+    plate = db.Column(db.String(50))
+    brand = db.Column(db.String(50))
+    vtype = db.Column(db.String(50))
+
+# 数据库模型：Note（自定义备注）
+class Note(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    content = db.Column(db.Text, nullable=False)
+
+# 在应用上下文中创建数据库表
+with app.app_context():
+    db.create_all()
+
+# 车辆信息列表
+vehicles = [
+    {"plate": "皖A09AD1", "brand": "奥迪A6", "vtype": "小轿车"},
+    {"plate": "皖A08222", "brand": "别克君威", "vtype": "小轿车"},
+    {"plate": "皖AQQ007", "brand": "奥迪Q7", "vtype": "越野车"},
+    {"plate": "皖AQQ882", "brand": "别克君越", "vtype": "轿车"}
+]
+
+# 司机信息列表，增加一个选项“陈祖国、王磊”
+drivers = ["陈祖国", "王磊", "陈祖国、王磊"]
+
+def parse_flatpickr_datetime(dt_str):
+    """
+    将 Flatpickr 提交的字符串（例如 "2025-03-10 08:00"）解析为 datetime 对象
+    """
+    try:
+        return datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+
+def format_datetime_with_weekday(dt_str):
+    """
+    将 "2025-03-10 08:00" 转换为 "2025-03-10 08:00 (周X)" 格式
+    """
+    dt = parse_flatpickr_datetime(dt_str)
+    if dt:
+        weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+        w = dt.weekday()  # 0代表周一, 6代表周日
+        return dt.strftime("%Y-%m-%d %H:%M") + f" (周{weekdays[w]})"
+    return dt_str
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        # 判断是提交用车记录还是添加自定义备注
+        if "start_date" in request.form:
+            # 用车记录提交
+            start_date_str = request.form.get("start_date", "")  # 例如 "2025-03-10 08:00"
+            end_date_str = request.form.get("end_date", "")
+            driver = request.form.get("driver", "")
+            plate = request.form.get("plate", "")
+
+            # 格式化日期（带周几）
+            formatted_start = format_datetime_with_weekday(start_date_str)
+            formatted_end = format_datetime_with_weekday(end_date_str)
+
+            # 根据车牌号查找车辆信息
+            selected_vehicle = next((v for v in vehicles if v["plate"] == plate), None)
+            brand = selected_vehicle["brand"] if selected_vehicle else ""
+            vtype = selected_vehicle["vtype"] if selected_vehicle else ""
+
+            # 创建并保存记录
+            new_submission = Submission(
+                start_date=formatted_start,
+                end_date=formatted_end,
+                driver=driver,
+                plate=plate,
+                brand=brand,
+                vtype=vtype
+            )
+            db.session.add(new_submission)
+            db.session.commit()
+            flash("用车记录提交成功", "success")
+        elif "note_content" in request.form:
+            # 自定义备注提交
+            note_content = request.form.get("note_content", "").strip()
+            if note_content:
+                new_note = Note(content=note_content)
+                db.session.add(new_note)
+                db.session.commit()
+                flash("自定义备注保存成功", "success")
+        return redirect(url_for('index'))
+
+    submissions = Submission.query.order_by(Submission.id.desc()).all()
+    notes = Note.query.order_by(Note.id.desc()).all()
+
+    # HTML 模板（使用 Bootstrap 5 进行美化与响应式布局，并增加记录编号）
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8"/>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>车辆与司机调度系统</title>
+      <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
+      <style>
+        body {
+          background: #eef2f7;
+        }
+        header {
+          background: linear-gradient(135deg, #007bff, #00c6ff);
+          color: #fff;
+          padding: 20px 0;
+          text-align: center;
+          box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .container {
+          margin-top: 30px;
+          margin-bottom: 30px;
+        }
+        .card {
+          margin-bottom: 20px;
+          border-radius: 8px;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .table-hover tbody tr:hover {
+          background-color: #f1f1f1;
+        }
+        .remarks, .custom-note, .custom-notes-list {
+          margin-top: 20px;
+        }
+        footer {
+          background: #333;
+          color: #ccc;
+          padding: 10px;
+          text-align: center;
+          font-size: 14px;
+        }
+      </style>
+    </head>
+    <body>
+      <header>
+        <h1>车辆与司机调度系统</h1>
+      </header>
+      <div class="container">
+        <!-- 用车记录提交卡 -->
+        <div class="card">
+          <div class="card-header">
+            <h5>提交车辆与司机信息</h5>
+          </div>
+          <div class="card-body">
+            <form method="POST">
+              <div class="mb-3 row">
+                <label for="start_date" class="col-sm-3 col-form-label">开始日期：</label>
+                <div class="col-sm-9">
+                  <input type="text" class="form-control" id="start_date" name="start_date" required>
+                </div>
+              </div>
+              <div class="mb-3 row">
+                <label for="end_date" class="col-sm-3 col-form-label">结束日期：</label>
+                <div class="col-sm-9">
+                  <input type="text" class="form-control" id="end_date" name="end_date" required>
+                </div>
+              </div>
+              <div class="mb-3 row">
+                <label for="driver" class="col-sm-3 col-form-label">司机：</label>
+                <div class="col-sm-9">
+                  <select class="form-select" name="driver" id="driver">
+                    {% for d in drivers %}
+                    <option value="{{ d }}">{{ d }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              </div>
+              <div class="mb-3 row">
+                <label for="plateSelect" class="col-sm-3 col-form-label">车牌号：</label>
+                <div class="col-sm-9">
+                  <select class="form-select" id="plateSelect" name="plate" required>
+                    <option value="">--请选择--</option>
+                    {% for v in vehicles %}
+                    <option value="{{ v.plate }}">{{ v.plate }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              </div>
+              <div class="d-grid">
+                <button type="submit" class="btn btn-primary">提交</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <!-- 用车记录列表卡 -->
+        <div class="card">
+          <div class="card-header">
+            <h5>已提交记录</h5>
+          </div>
+          <div class="card-body">
+            {% if submissions %}
+            <table class="table table-bordered table-hover">
+              <thead class="table-light">
+                <tr>
+                  <th>序号</th>
+                  <th>开始日期</th>
+                  <th>结束日期</th>
+                  <th>司机</th>
+                  <th>车牌号</th>
+                  <th>厂牌型号</th>
+                  <th>类型</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for s in submissions %}
+                <tr>
+                  <td>{{ loop.index }}</td>
+                  <td>{{ s.start_date }}</td>
+                  <td>{{ s.end_date }}</td>
+                  <td>{{ s.driver }}</td>
+                  <td>{{ s.plate }}</td>
+                  <td>{{ s.brand }}</td>
+                  <td>{{ s.vtype }}</td>
+                  <td>
+                    <a href="{{ url_for('delete_submission', submission_id=s.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('确定要删除该记录吗？');">删除</a>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <p class="text-center">暂无记录</p>
+            {% endif %}
+          </div>
+        </div>
+
+        <!-- 固定备注卡 -->
+        <div class="card remarks">
+          <div class="card-header">
+            <h5>备注</h5>
+          </div>
+          <div class="card-body">
+            <p>1. 正常外出就近使用（奥迪 皖AQQ007；皖A09AD1），远途使用（别克君威商务；皖A00882）。</p>
+            <p>2. 自驾优先借用皖A00882别克车，皖A09AD1奥迪车况较差不外借，钥匙在彭主任处。</p>
+            <p>3. 大楼内各家子公司现有商务车如下：<br>
+               股权、资本、资产、保理、租赁、典当（1辆），担保公司（2辆）。</p>
+            <p>4. 车况较好的商务车辆：<br>
+               担保公司别克商务车（皖A00956），<br>
+               资本公司别克商务车（皖AZB676），<br>
+               资产公司别克商务车（沪BT6416）。</p>
+          </div>
+        </div>
+
+        <!-- 自定义备注编辑卡 -->
+        <div class="card custom-note">
+          <div class="card-header">
+            <h5>添加自定义备注</h5>
+          </div>
+          <div class="card-body">
+            <form method="POST">
+              <div class="mb-3">
+                <textarea class="form-control" name="note_content" rows="3" placeholder="请输入备注内容..."></textarea>
+              </div>
+              <button type="submit" class="btn btn-success">保存备注</button>
+            </form>
+          </div>
+        </div>
+
+        <!-- 自定义备注列表卡 -->
+        <div class="card custom-notes-list">
+          <div class="card-header">
+            <h5>自定义备注列表</h5>
+          </div>
+          <div class="card-body">
+            {% if notes %}
+              <ul class="list-group">
+              {% for note in notes %}
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                  {{ note.content }}
+                  <a href="{{ url_for('delete_note', note_id=note.id) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('确定删除此备注？');">删除</a>
+                </li>
+              {% endfor %}
+              </ul>
+            {% else %}
+              <p class="text-center">暂无自定义备注</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <footer>
+        <p>&copy; 2025 车辆与司机调度系统. 保留所有权利.</p>
+      </footer>
+
+      <!-- 引入 Bootstrap JS 和 Flatpickr JS -->
+      <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+      <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+      <script>
+          flatpickr("#start_date", {
+              enableTime: true,
+              time_24hr: true,
+              dateFormat: "Y-m-d H:i",
+              defaultDate: new Date(),
+              minuteIncrement: 1
+          });
+          flatpickr("#end_date", {
+              enableTime: true,
+              time_24hr: true,
+              dateFormat: "Y-m-d H:i",
+              defaultDate: new Date(),
+              minuteIncrement: 1
+          });
+      </script>
+    </body>
+    </html>
+    """
+    return render_template_string(html_content, drivers=drivers, vehicles=vehicles,
+                                  submissions=submissions, notes=notes)
+
+@app.route("/delete/<int:submission_id>")
+def delete_submission(submission_id):
+    submission = Submission.query.get(submission_id)
+    if submission:
+        db.session.delete(submission)
+        db.session.commit()
+    return redirect(url_for('index'))
+
+@app.route("/delete_note/<int:note_id>")
+def delete_note(note_id):
+    note = Note.query.get(note_id)
+    if note:
+        db.session.delete(note)
+        db.session.commit()
+    return redirect(url_for('index'))
+
+# 处理自定义备注提交（在请求前执行）
+@app.before_request
+def handle_note_submission():
+    if request.method == "POST" and "note_content" in request.form:
+        note_content = request.form.get("note_content", "").strip()
+        if note_content:
+            new_note = Note(content=note_content)
+            db.session.add(new_note)
+            db.session.commit()
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=5001, debug=True)
